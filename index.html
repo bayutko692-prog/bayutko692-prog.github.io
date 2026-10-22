@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MaskPhish — URL Masking</title>
+<meta name="description" content="Mask a phishing URL under a normal-looking domain. Client-side, 24/7.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎭</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="hero">
+  <pre class="logo" aria-label="MaskPhish">
+######┌──────────────────────────┐#####
+######│▙▗▌      ▌  ▛▀▖▌  ▗    ▌  │#####
+######│▌▘▌▝▀▖▞▀▘▌▗▘▙▄▘▛▀▖▄ ▞▀▘▛▀▖│#####
+######│▌ ▌▞▀▌▝▀▖▛▚ ▌  ▌ ▌▐ ▝▀▖▌ ▌│#####
+######│▘ ▘▝▀▘▀▀ ▘ ▘▘  ▘ ▘▀▘▀▀ ▘ ▘│#####
+######└──────────────────────────┘#####</pre>
+  <p class="tagline">Mask a URL under a normal-looking domain &mdash; runs 100% in your browser.</p>
+  <p class="badges">
+    <span class="badge ok">client-side</span>
+    <span class="badge ok">no backend</span>
+    <span class="badge ok">no account</span>
+    <span class="badge">github pages</span>
+  </p>
+</header>
+
+<main>
+  <form id="maskForm" class="panel" autocomplete="off">
+    <div class="field">
+      <label for="target">Phishing / target URL <span class="req">*</span></label>
+      <input type="url" id="target" name="target" placeholder="https://victim-site.example/login" required spellcheck="false">
+      <p class="hint">Full URL including query string. <code>?</code> and <code>&amp;</code> are preserved intact.</p>
+    </div>
+
+    <div class="field">
+      <label for="mask">Masking domain <span class="req">*</span></label>
+      <input type="text" id="mask" name="mask" placeholder="https://google.com" required spellcheck="false">
+      <p class="hint">The domain the victim <em>sees</em>. e.g. <code>https://facebook.com</code></p>
+      <div class="chips" id="maskPresets">
+        <button type="button" class="chip" data-mask="https://facebook.com">facebook.com</button>
+        <button type="button" class="chip" data-mask="https://google.com">google.com</button>
+        <button type="button" class="chip" data-mask="https://accounts.google.com">accounts.google.com</button>
+        <button type="button" class="chip" data-mask="https://instagram.com">instagram.com</button>
+        <button type="button" class="chip" data-mask="https://linkedin.com">linkedin.com</button>
+        <button type="button" class="chip" data-mask="https://dropbox.com">dropbox.com</button>
+        <button type="button" class="chip" data-mask="https://netflix.com">netflix.com</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="words">Social engineering words</label>
+      <input type="text" id="words" name="words" placeholder="free-money, best-pubg-tricks" spellcheck="false">
+      <p class="hint">No spaces &mdash; use <code>-</code> between words. Optional.</p>
+      <div class="chips" id="wordPresets">
+        <button type="button" class="chip" data-words="free-money">free-money</button>
+        <button type="button" class="chip" data-words="free-gift-card">free-gift-card</button>
+        <button type="button" class="chip" data-words="account-verified">account-verified</button>
+        <button type="button" class="chip" data-words="sign-in-secure">sign-in-secure</button>
+        <button type="button" class="chip" data-words="best-pubg-tricks">best-pubg-tricks</button>
+        <button type="button" class="chip" data-words="claim-reward">claim-reward</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="custom">Custom alias <span class="muted">(optional)</span></label>
+      <input type="text" id="custom" name="custom" placeholder="auto-generated" spellcheck="false">
+      <p class="hint">Only <code>a-z 0-9 _</code>. Leave blank for a random alias.</p>
+    </div>
+
+    <button type="submit" class="go" id="goBtn">
+      <span class="go-label">Generate Masked URL</span>
+      <span class="spinner" aria-hidden="true"></span>
+    </button>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </form>
+
+  <section class="panel result-panel hidden" id="resultPanel">
+    <h2 class="panel-title">Masked URL</h2>
+    <div class="out">
+      <input type="text" id="outUrl" readonly spellcheck="false">
+      <button type="button" id="copyBtn" class="btn-copy">Copy</button>
+    </div>
+    <div class="out-meta" id="outMeta"></div>
+    <div class="actions">
+      <a id="openBtn" class="btn" target="_blank" rel="noopener noreferrer">Open masked link</a>
+      <a id="rawBtn" class="btn ghost" target="_blank" rel="noopener noreferrer">Open raw short link</a>
+      <button type="button" class="btn ghost" id="newBtn">New mask</button>
+    </div>
+    <div class="preview">
+      <p class="preview-label">What the victim sees in the address bar:</p>
+      <div class="fake-url" id="fakeUrl"></div>
+      <p class="preview-note">Everything before <code>@</code> is a user-info segment &mdash; the browser hides it and shows only the real host.</p>
+    </div>
+  </section>
+
+  <section class="panel history-panel">
+    <h2 class="panel-title">History <span class="muted" id="histCount"></span></h2>
+    <ul class="history" id="history"></ul>
+    <p class="empty" id="histEmpty">No masks yet. Generated links are stored locally in your browser.</p>
+    <button type="button" class="btn ghost small" id="clearHist">Clear history</button>
+  </section>
+
+  <section class="panel">
+    <h2 class="panel-title">How it works</h2>
+    <ol class="steps">
+      <li>Your target URL is sent straight from your browser to the shortener &mdash; it never touches this site's server (there is none).</li>
+      <li>The shortener returns a tiny redirect link. We use a <strong>custom alias</strong> so the browser can create it without reading a cross-origin response.</li>
+      <li>We build <code>masking-domain-words@short-link</code>. The browser treats the part before <code>@</code> as user-info and displays only the real host.</li>
+    </ol>
+    <p class="fineprint">This page only manipulates URL text. It hosts no phishing page, collects no credentials, and sends no analytics. Use where you have authorisation.</p>
+  </section>
+</main>
+
+<footer>
+  <p>MaskPhish &mdash; original concept by <a href="https://github.com/jaykali/maskphish" target="_blank" rel="noopener noreferrer">jaykali</a> (MIT). Web port: static, GitHub Pages, no backend.</p>
+</footer>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
