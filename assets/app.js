@@ -7,23 +7,25 @@
 
   /* ------------------------------------------------------------------ *
    * Shortener providers.
-   * Every provider supports a CUSTOM ALIAS, which is what makes this
-   * work without a backend: the browser picks the alias up-front, so it
-   * already knows the final short URL before the request is even sent.
-   * The create request is then fired with mode:'no-cors' (a simple GET,
-   * no preflight) and the response body is simply ignored.
+   *
+   * Both is.gd and v.gd expose a JSON endpoint that sends
+   * "access-control-allow-origin: *", so the browser can call it with a
+   * normal CORS request and actually READ the result. That gives us:
+   *   - the real short URL (no guessing)
+   *   - a structured error message when the target is rejected
+   *   - optional custom aliases
+   *
+   * The JSON endpoint is used instead of format=simple because the
+   * simple endpoint sends no CORS headers at all.
    * ------------------------------------------------------------------ */
   var PROVIDERS = [
-    { id: 'is.gd', host: 'is.gd',   create: 'https://is.gd/create.php' },
-    { id: 'v.gd',  host: 'v.gd',    create: 'https://v.gd/create.php' },
-    { id: 'da.gd', host: 'da.gd',   create: 'https://da.gd/shorturl' }
+    { id: 'is.gd', host: 'is.gd', create: 'https://is.gd/create.php' },
+    { id: 'v.gd',  host: 'v.gd',  create: 'https://v.gd/create.php'  }
   ];
 
   var ALIAS_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789';
   var MAX_ALIAS_ATTEMPTS = 3;   // per provider
   var MAX_PROVIDERS = 2;        // is.gd then v.gd
-  var VERIFY_TRIES = 6;
-  var VERIFY_DELAY = 900;       // ms
   var HIST_KEY = 'maskphish.history.v1';
 
   /* ---------------------------- helpers ---------------------------- */
@@ -91,47 +93,66 @@
   }
 
   /**
-   * Create a short URL with a chosen alias. Fire-and-forget: the request
-   * is sent, the body is ignored (cross-origin, no CORS headers on the
-   * shortener — hence no-cors mode).
+   * Create a short URL and read the result.
+   *
+   * The JSON endpoint returns either
+   *   { "shorturl": "https://is.gd/xxxxx" }
+   * or
+   *   { "errorcode": N, "errormessage": "..." }
+   *
+   * The target URL is URL-encoded, which is what fixes the classic
+   * maskphish bug where "?user=test&pass=123" got truncated at the '&'.
    */
   function createShort(provider, alias, targetUrl) {
-    // encodeURIComponent on the target fixes the classic maskphish bug
-    // where "?a=1&b=2" got truncated at the '&'.
-    var qs = 'format=simple&shorturl=' + encodeURIComponent(alias) +
-              '&url=' + encodeURIComponent(targetUrl);
-    var sep = provider.create.indexOf('?') === -1 ? '?' : '&';
-    var url = provider.create + sep + qs;
+    var qs = 'format=json&url=' + encodeURIComponent(targetUrl);
+    if (alias) qs += '&shorturl=' + encodeURIComponent(alias);
 
-    return fetch(url, { mode: 'no-cors', cache: 'no-store', credentials: 'omit' })
-      .then(function () { return true; })
-      .catch(function () { return false; });
+    return fetch(provider.create + '?' + qs, {
+      method: 'GET',
+      mode: 'cors',
+      cache: 'no-store',
+      credentials: 'omit',
+      headers: { 'Accept': 'application/json' }
+    })
+      .then(function (res) {
+        return res.text().then(function (txt) {
+          var data;
+          try { data = JSON.parse(txt); }
+          catch (e) { throw new Error('Unexpected response from ' + provider.id); }
+          if (data && data.errormessage) throw new Error(data.errormessage);
+          if (!data || !data.shorturl) throw new Error('Unexpected response from ' + provider.id);
+          // normalise: { shorturl: "https://is.gd/abc" }
+          var m = String(data.shorturl).match(/^https?:\/\/([^\/]+)\/(.+)$/);
+          if (!m) throw new Error('Unexpected response from ' + provider.id);
+          return { host: m[1], alias: m[2] };
+        });
+      });
   }
 
   /**
-   * Confirm the alias actually resolves.
+   * Confirm the short URL really exists.
    *
-   * Signal A (primary): mode:'no-cors' + redirect:'manual'. Per the Fetch
-   * spec a redirect response becomes an opaque-redirect filtered response
-   * (type 'opaqueredirect'), while a 404 becomes a plain opaque response
-   * (type 'opaque'). The response TYPE is what separates them.
-   *
-   * Signal B (tie-breaker): redirect:'error'. When the alias exists the
-   * 301 makes the fetch REJECT; when it is missing the 404 resolves
-   * normally. Independent of signal A, so a browser that handles one
-   * differently still gets a correct answer.
+   * The shortener's own JSON endpoint is the oracle: asking for an alias
+   * that is already taken comes back with errorcode 2 ("...already
+   * exists..."), while a free alias comes back with a fresh shorturl.
+   * So a successful create can be independently confirmed from the
+   * browser, using the same CORS-enabled endpoint.
    */
-  function verifyAlias(host, alias) {
-    var url = 'https://' + host + '/' + alias;
+  function verifyAlias(provider, alias) {
+    var qs = 'format=json&shorturl=' + encodeURIComponent(alias) +
+              '&url=' + encodeURIComponent('https://example.com/verify');
 
-    return fetch(url, { mode: 'no-cors', redirect: 'manual', cache: 'no-store' })
-      .then(function (res) {
-        if (res.type === 'opaqueredirect' || res.type === 'opaque-redirect') return true;
-        if (res.redirected === true) return true;
-        // Signal A says "no redirect" -> ask signal B to break the tie.
-        return fetch(url, { mode: 'no-cors', redirect: 'error', cache: 'no-store' })
-          .then(function () { return false; })   // resolved => no redirect => 404
-          .catch(function () { return true; });   // rejected => redirect => exists
+    return fetch(provider.create + '?' + qs, {
+      mode: 'cors', cache: 'no-store', credentials: 'omit',
+      headers: { 'Accept': 'application/json' }
+    })
+      .then(function (res) { return res.text(); })
+      .then(function (txt) {
+        var data;
+        try { data = JSON.parse(txt); } catch (e) { return false; }
+        if (!data) return false;
+        if (data.errorcode === 2 && /already exists/i.test(data.errormessage || '')) return true;
+        return false;
       })
       .catch(function () { return false; });
   }
@@ -143,33 +164,21 @@
       var alias = customAlias || ('m' + randAlias(8));
       onProgress('Creating short link on ' + provider.id + ' …');
 
-      return createShort(provider, alias, targetUrl).then(function (sent) {
-        if (!sent) throw new Error('network');
-
-        return waitForAlias(provider, alias);
-      }).then(function (ok) {
-        if (ok) return { alias: alias, host: provider.host };
-        if (i + 1 < attempts) {
+      return createShort(provider, alias, targetUrl).then(function (res) {
+        // The provider echoes the alias it actually used. If we did not ask
+        // for a specific alias it returns its own random one.
+        return { alias: res.alias, host: res.host };
+      }).catch(function (err) {
+        // "already exists" -> retry with a fresh alias.
+        var msg = (err && err.message) || 'failed';
+        if (i + 1 < attempts && /already exists/i.test(msg)) {
+          onProgress('Alias taken, retrying on ' + provider.id + ' …');
           return sleep(400).then(function () { return attempt(i + 1); });
         }
-        throw new Error('not-created');
-      });
-    }
+        throw err;
+      });    }
 
     return attempt(0);
-  }
-
-  function waitForAlias(provider, alias) {
-    var tries = 0;
-    function poll() {
-      return verifyAlias(provider.host, alias).then(function (ok) {
-        if (ok) return true;
-        tries++;
-        if (tries >= VERIFY_TRIES) return false;
-        return sleep(VERIFY_DELAY).then(poll);
-      });
-    }
-    return poll();
   }
 
   /* ----------------------------- history ----------------------------- */
@@ -283,12 +292,13 @@
 
     var providers = PROVIDERS.slice(0, MAX_PROVIDERS);
     var i = 0;
+    var lastError = '';
 
     function next() {
       if (i >= providers.length) {
         btn.disabled = false;
         btn.classList.remove('loading');
-        setStatus('✗ Could not create the short link. The shortener may be rate-limiting, or it rejected the target URL. Try again in a moment.', 'err');
+        setStatus('✗ ' + (lastError || 'Could not create the short link. The shortener may be rate-limiting, or it rejected the target URL. Try again in a moment.'), 'err');
         return;
       }
       var p = providers[i++];
@@ -305,9 +315,27 @@
 
           btn.disabled = false;
           btn.classList.remove('loading');
-          setStatus('✓ Done — masked URL generated and verified.', 'ok');
+
+          // Independently confirm the alias exists, then report honestly.
+          setStatus('Verifying the short link …', '');
+          return verifyAlias(p, res.alias).then(function (ok) {
+            setStatus(ok
+              ? '✓ Done — masked URL generated and verified.'
+              : '✓ Done — masked URL generated (could not confirm the alias, but it was accepted by ' + p.id + ').',
+              ok ? 'ok' : 'warn');
+          });
         })
-        .catch(function () { next(); });
+        .catch(function (err) {
+          lastError = (err && err.message) ? 'Shortener said: ' + err.message : lastError;
+          // A rejected target URL will fail on every provider — stop early.
+          if (/valid URL|doesn't seem to be of a type|may only contain/i.test(lastError)) {
+            btn.disabled = false;
+            btn.classList.remove('loading');
+            setStatus('✗ ' + lastError, 'err');
+            return;
+          }
+          next();
+        });
     }
 
     next();
