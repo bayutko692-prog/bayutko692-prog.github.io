@@ -48,9 +48,14 @@
     var v = String(raw || '').trim();
     if (!v) return null;
     if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+    if (/\s/.test(v)) return null;
     try {
       var u = new URL(v);
       if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      // A usable host is required — reject "https://not a url" style input
+      // before it reaches the shortener.
+      if (!u.hostname || /[\s]/.test(u.hostname)) return null;
+      if (!/^[a-z0-9.-]+$/i.test(u.hostname.replace(/:\d+$/, ''))) return null;
       return u;
     } catch (e) { return null; }
   }
