@@ -68,15 +68,26 @@
   /* --------------------- the actual masking ------------------------- */
 
   /**
-   * Build the masked URL exactly the way the original maskphish.sh does:
+   * Build the masked URL the way the original maskphish.sh does:
    *   <mask-domain>[-<words>]@<short-host>/<alias>
    * The segment before '@' is URL user-info, so browsers display only
    * the real host while the string itself reads like the mask domain.
+   *
+   * One hardening over the original: the mask is reduced to its ORIGIN
+   * for the user-info part. A path in the mask domain would otherwise
+   * break the URL, because the first '/' starts the path and the '@'
+   * would land in the wrong segment.
    */
   function buildMaskedUrl(maskRaw, words, host, alias) {
     var mask = String(maskRaw).trim().replace(/\/+$/, '');
+    var path = '';
+    var m = mask.match(/^([a-z][a-z0-9+.-]*:\/\/[^/?#]+)([^?#]*)/i);
+    if (m) {
+      mask = m[1];
+      path = m[2] || '';
+    }
     if (words) mask += '-' + words;
-    return mask + '@' + host + '/' + alias;
+    return mask + '@' + host + '/' + alias + path;
   }
 
   /**
@@ -99,15 +110,29 @@
 
   /**
    * Confirm the alias actually resolves.
-   * With mode:'no-cors' + redirect:'manual' the browser hands back an
-   * opaque-redirect filtered response (type 'opaqueredirect') when the
-   * short URL exists and redirects, and a plain opaque response (type
-   * 'opaque') when it 404s. The response TYPE is what tells them apart.
+   *
+   * Signal A (primary): mode:'no-cors' + redirect:'manual'. Per the Fetch
+   * spec a redirect response becomes an opaque-redirect filtered response
+   * (type 'opaqueredirect'), while a 404 becomes a plain opaque response
+   * (type 'opaque'). The response TYPE is what separates them.
+   *
+   * Signal B (tie-breaker): redirect:'error'. When the alias exists the
+   * 301 makes the fetch REJECT; when it is missing the 404 resolves
+   * normally. Independent of signal A, so a browser that handles one
+   * differently still gets a correct answer.
    */
   function verifyAlias(host, alias) {
     var url = 'https://' + host + '/' + alias;
+
     return fetch(url, { mode: 'no-cors', redirect: 'manual', cache: 'no-store' })
-      .then(function (res) { return res.type === 'opaqueredirect' || res.type === 'opaque-redirect'; })
+      .then(function (res) {
+        if (res.type === 'opaqueredirect' || res.type === 'opaque-redirect') return true;
+        if (res.redirected === true) return true;
+        // Signal A says "no redirect" -> ask signal B to break the tie.
+        return fetch(url, { mode: 'no-cors', redirect: 'error', cache: 'no-store' })
+          .then(function () { return false; })   // resolved => no redirect => 404
+          .catch(function () { return true; });   // rejected => redirect => exists
+      })
       .catch(function () { return false; });
   }
 
@@ -235,6 +260,16 @@
     if (words && /\s/.test(words)) {
       setStatus('✗ Social engineering words must not contain spaces — use "-" instead', 'err');
       return;
+    }
+    // The words land in the user-info segment, so strip characters that
+    // would break the URL structure ('@', '/', '?', '#', whitespace).
+    if (words) {
+      var cleaned = words.replace(/[@/?#\s\\<>"']/g, '').replace(/^-+|-+$/g, '');
+      if (!cleaned) {
+        setStatus('✗ Social engineering words contained no usable characters', 'err');
+        return;
+      }
+      words = cleaned;
     }
     if (custom && !/^[a-z0-9_]+$/.test(custom)) {
       setStatus('✗ Custom alias may only contain a-z, 0-9 and underscore', 'err');
